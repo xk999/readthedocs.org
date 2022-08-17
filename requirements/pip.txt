@@ -107,3 +107,5 @@ django-csp==3.7
 
 django-structlog==2.2.0
 structlog==21.5.0
+
+requirements-parser==0.5.0

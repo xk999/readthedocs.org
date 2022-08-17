@@ -4,6 +4,9 @@ import json
 
 import structlog
 
+import requirements
+from readthedocs.config.models import PythonInstallRequirements
+
 log = structlog.get_logger(__name__)
 
 
@@ -32,6 +35,8 @@ class BuildDataCollector:
     def _safe_json_loads(content, default=None):
         # pylint: disable=broad-except
         try:
+            # NOTE: we could use `object_hook` to make all the keys lowercase here
+            # https://docs.python.org/3/library/json.html#json.load
             return json.loads(content)
         except Exception:
             log.info(
@@ -62,8 +67,8 @@ class BuildDataCollector:
         )
         data["packages"] = {
             "pip": {
-                "user": self._get_pip_packages(include_all=False),
-                "all": self._get_pip_packages(include_all=True),
+                "user": self._get_user_pip_packages(),
+                "all": self._get_all_pip_packages(),
             },
             "conda": {
                 "all": conda_packages,
@@ -121,9 +126,41 @@ class BuildDataCollector:
             return packages
         return []
 
-    def _get_pip_packages(self, include_all=False):
+    def _get_user_pip_packages(self):
         """
-        Get all the packages installed by the user using pip.
+        Get all the packages to be installed defined by the user.
+        """
+        results = []
+        # from celery.contrib import rdb
+        # rdb.set_trace()
+        for install in self.config.python.install:
+            if isinstance(install, PythonInstallRequirements):
+                if install.requirements:
+                    cmd = ["cat", install.requirements]
+                    code, stdout, _ = self.run(*cmd)
+                    for requirement in requirements.parse(stdout):
+                        name = requirement.name.lower()
+
+                        # If the user defines a specific version in the requirements file, we save it.
+                        # Otherwise, we don't because we don't know which version will be installed.
+                        version = "undefined"
+                        if requirement.specs:
+                            if requirement.specs[0][0] == "==":
+                                version = requirement.specs[0][1]
+                            else:
+                                version = "unknown"
+
+                        results.append(
+                            {
+                                "name": name,
+                                "version": version,
+                            }
+                        )
+        return results
+
+    def _get_all_pip_packages(self):
+        """
+        Get all the packages installed by pip.
 
         This includes top level and transitive dependencies.
         The output of ``pip list`` is in the form of::
@@ -151,11 +188,21 @@ class BuildDataCollector:
                 }
             ]
         """
-        cmd = ["python", "-m", "pip", "list", "--pre", "--local", "--format", "json"]
-        if not include_all:
-            cmd.append("--not-required")
+        cmd = [
+            "python",
+            "-m",
+            "pip",
+            "list",
+            "--pre",
+            "--local",
+            "--format",
+            "json",
+            "--not-required",
+        ]
         code, stdout, _ = self.run(*cmd)
         if code == 0 and stdout:
+            # TODO: it would be good to convert all the keys to lowercase as we do with `packages.pip.user`,
+            # this will simplify the queries and avoid confusions
             return self._safe_json_loads(stdout, [])
         return []
 
